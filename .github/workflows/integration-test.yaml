@@ -1,0 +1,134 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Presubmit Integration Test
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'dashboard/**'
+      - 'CODEOWNERS'
+      - 'LICENSE*'
+      - 'NOTICE*'
+      - '.gitignore'
+      - 'renovate.json'
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull Request number to test (leave empty to test the selected branch)'
+        required: false
+        default: ''
+        type: string
+
+permissions: {}
+
+jobs:
+  precheck:
+    name: Authorize & Queue GDC Staging Test
+    if: github.event_name != 'issue_comment' || (github.event.issue.pull_request != null && contains(github.event.comment.body, '/test-integration'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      issues: write
+      pull-requests: read
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+      pr_number: ${{ steps.gate.outputs.pr_number }}
+      pr_head_sha: ${{ steps.gate.outputs.pr_head_sha }}
+      pr_check_run_id: ${{ steps.gate.outputs.pr_check_run_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify maintainer authorization and attach visible PR Check Run
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          CHECK_NAME: CAS Integration Test (GDC Staging)
+        run: |
+          git fetch origin main
+          mkdir -p /tmp/ci-bootstrap
+          if git cat-file -e origin/main:scripts/ci-common.sh 2>/dev/null; then
+            git show origin/main:scripts/ci-common.sh > /tmp/ci-bootstrap/ci-common.sh
+          else
+            cp ./scripts/ci-common.sh /tmp/ci-bootstrap/ci-common.sh
+          fi
+          source /tmp/ci-bootstrap/ci-common.sh
+          precheck_integration_trigger
+
+  integration-test:
+    name: CAS Integration Test (GDC Staging)
+    needs: precheck
+    if: needs.precheck.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    environment: gdc-staging
+    timeout-minutes: 15
+    concurrency:
+      group: cas-staging-integration-${{ needs.precheck.outputs.pr_number || github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '20'
+
+      - name: Stage trusted CI scripts from origin/main
+        run: |
+          git fetch origin main
+          mkdir -p /tmp/ci-bootstrap
+          if git cat-file -e origin/main:scripts/ci-common.sh 2>/dev/null; then
+            git show origin/main:scripts/ci-common.sh > /tmp/ci-bootstrap/ci-common.sh
+          else
+            cp ./scripts/ci-common.sh /tmp/ci-bootstrap/ci-common.sh
+          fi
+          source /tmp/ci-bootstrap/ci-common.sh
+          prepare_trusted_ci_files
+          echo "CI_TRUSTED_DIR=${CI_TRUSTED_DIR}" >> "${GITHUB_ENV}"
+
+      - name: Run CAS Integration Suite on GDC Staging
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHECK_NAME: CAS Integration Test (GDC Staging)
+          PR_NUMBER: ${{ needs.precheck.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ needs.precheck.outputs.pr_head_sha }}
+          PR_CHECK_RUN_ID: ${{ needs.precheck.outputs.pr_check_run_id }}
+          GDC_CAS_STAGING_SA_KEY: ${{ secrets.GDC_CAS_STAGING_SA_KEY }}
+          GDC_ORG: ${{ vars.GDC_ORG }}
+          GDC_ZONE: ${{ vars.GDC_ZONE }}
+          GDC_LAB_URL: ${{ vars.GDC_LAB_URL }}
+          GDC_CAS_PROJECT: ${{ vars.GDC_CAS_PROJECT }}
+          GDC_CAS_CA_NAME: ${{ vars.GDC_CAS_CA_NAME }}
+        run: bash "${CI_TRUSTED_DIR}/scripts/ci-integration-test.sh"
