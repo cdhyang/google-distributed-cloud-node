@@ -19,6 +19,7 @@
  * account's private key and then exchange it for an STS (Security Token Service) token.
  */
 
+import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import axios from 'axios'; 
 import https from 'https';
@@ -64,16 +65,18 @@ async function signSelfSignedJwt(saConfig) {
     // The issuer and subject for the JWT are typically in the format: system:serviceaccount:<project>:<name>
     const issSubValue = `system:serviceaccount:${project}:${name}`;
     const nowInSeconds = Math.floor(Date.now() / 1000);
-    // The self-signed JWT typically has a shorter lifespan, e.g., 1 hour, as it's exchanged quickly.
-    // The Go code uses 24 hours for the JWT, let's match that for consistency.
-    const expirationInSeconds = nowInSeconds + (24 * 60 * 60);
+    // Self-signed assertion JWTs are exchanged immediately with STS, so bound
+    // their lifetime to 1 hour and include standard nbf and unique jti claims.
+    const expirationInSeconds = nowInSeconds + (60 * 60);
 
     const payload = {
         iss: issSubValue,
         sub: issSubValue,
         aud: tokenUri, // Audience for the self-signed JWT is the STS token URI
         iat: nowInSeconds,
+        nbf: nowInSeconds,
         exp: expirationInSeconds,
+        jti: crypto.randomUUID(),
     };
 
     const header = {

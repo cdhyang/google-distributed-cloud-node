@@ -100,7 +100,17 @@ describe('getStsToken', () => {
       assert.equal(verified.iss, 'system:serviceaccount:test-project:test-sa');
       assert.equal(verified.sub, 'system:serviceaccount:test-project:test-sa');
       assert.equal(verified.aud, url);
-      assert.ok(verified.exp > verified.iat);
+      assert.equal(verified.nbf, verified.iat);
+      assert.equal(verified.exp - verified.iat, 3600);
+      assert.match(
+        verified.jti,
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+      );
+
+      const secondToken = await getStsToken(saConfig, targetAudience);
+      assert.equal(secondToken.accessToken, 'sts-access-token-123');
+      const secondVerified = jwt.verify(capturedBody.subject_token, publicKey, { algorithms: ['ES256'] });
+      assert.notEqual(secondVerified.jti, verified.jti);
     } finally {
       await stopServer(server);
     }

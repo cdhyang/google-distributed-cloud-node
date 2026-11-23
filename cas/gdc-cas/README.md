@@ -8,6 +8,14 @@ This package provides a Node.js client to interact with the Google Distributed C
 npm install gdc-cas
 ```
 
+## Supported GDC Air-gapped Versions
+
+`gdc-cas` follows independent [Semantic Versioning](https://semver.org/) decoupled from GDC Air-gapped platform release numbers:
+
+| `gdc-cas` Version | Node.js Runtime | Supported GDC Air-gapped Releases | Notes |
+| :--- | :--- | :--- | :--- |
+| `0.1.x` | `>= 20.0.0` (LTS) | `1.14`, `1.15`, `1.16+` | `certificateTemplate`, `subjectOverride`, and direct gRPC dataplane (`useGrpc: true`) require GDC `1.15+`. |
+
 ## Prerequisites
 1. Create a [Project](https://cloud.google.com/distributed-cloud/hosted/docs/1.14-next/gdch/platform/pa-user/create-a-project) in your GDC cluster.
 2. Follow the [Manage service accounts](https://cloud.google.com/distributed-cloud/hosted/docs/1.14-next/gdch/application/ao-user/iam/service-identities) steps to create a service account for your project:
@@ -112,101 +120,27 @@ The client supports the following methods to manage certificate requests and rev
 
 ---
 
-## Development & Publishing Guide
-
-When preparing a new release after local development or modifying the protobuf schema, follow these steps to securely build, bump the version, test the changes, and publish the package.
+## Local Development & Verification
 
 ### 1. Updating the Protocol Buffer
 
-If you modify `proto/cas.proto` to add new endpoints, fields, or services, you **must** recompile the static JSON descriptor so the gRPC client can serialize the payloads correctly at runtime:
+If you modify `proto/cas.proto` to add new endpoints, fields, or services, recompile the static JSON descriptor so the gRPC client can serialize payloads at runtime:
 
 ```bash
-# 1. Navigate to the package directory
 cd ./cas/gdc-cas
-
-# 2. Run the build:proto script to regenerate proto/cas-json.js
 npm run build:proto
 ```
-*Note: Make sure to commit the updated `proto/cas-json.js` file along with your `.proto` changes.*
+*Note: Commit the updated `proto/cas-json.js` file alongside your `.proto` changes (verified automatically in CI).*
 
-### 2. Version Bumping
-
-To safely bump the alpha pre-release version (e.g., from `alpha.1` to `alpha.2`) within the repository structure:
+### 2. Running Unit, Type & Package Smoke Tests
 
 ```bash
-# 1. Navigate to the package directory
 cd ./cas/gdc-cas
-
-# 2. Increment the package version (without auto-tagging)
-NEW_VERSION=$(npm version prerelease --preid=alpha --no-git-tag-version)
-echo "Successfully bumped version to: $NEW_VERSION"
-
-# 3. Stage the version change
-git add .
-
-# 4. Commit the new version
-git commit -m "chore(gdc-cas): bump to $NEW_VERSION"
+npm ci
+npm run check:types
+npm test
 ```
 
-### 2. Local Testing with Verdaccio
-Before publishing to the live registry, you can test the entire packaging and installation flow locally using Verdaccio.
+### 3. Releases & Publishing
 
-**Start Verdaccio (Terminal 1):**
-```bash
-npx verdaccio
-# This starts a local registry at http://localhost:4873
-```
-
-**Publish Locally (Terminal 2):**
-1. Create a dummy test user on your local registry:
-   ```bash
-   npm addUser --registry http://localhost:4873 --auth-type=legacy
-   # You will be prompted to enter a username and password. You can type anything as it does not matter to Verdaccio.
-   ```
-2. Publish `gdc-cas` to the local registry:
-   ```bash
-   # From the ./cas/gdc-cas directory
-   npm publish --registry http://localhost:4873
-   ```
-
-**Test Installation (Terminal 3):**
-Create a temporary directory anywhere on your computer to test the downloaded package:
-```bash
-mkdir ~/test-gdc-cas && cd ~/test-gdc-cas
-npm init -y
-npm install gdc-cas --registry http://localhost:4873
-```
-
-**Verify Functionality:**
-Create a file named `test.js` in your `test-gdc-cas` directory to verify the package imports correctly:
-```javascript
-import { CASClient } from 'gdc-cas';
-
-const clientConfig = {
-    saFilePath: 'dummy.json', 
-    caFilePath: 'dummy.crt', 
-    zone: 'us-west6-a',
-};
-
-try {
-    const casClient = new CASClient(clientConfig);
-    console.log("Successfully imported and instantiated CASClient!");
-} catch (error) {
-    console.error("Failed to instantiate CASClient:", error);
-}
-```
-Run it with `node test.js`. If it prints the success message, your package was bundled and published perfectly!
-
-### 3. Publishing
-
-To publish to the public npm registry:
-```bash
-# From the ./cas/gdc-cas directory
-npm publish
-```
-
-Or to publish to an enterprise or private registry:
-```bash
-# From the ./cas/gdc-cas directory
-npm publish --registry=https://<your-registry-url>
-```
+Official releases of `gdc-cas` to [npmjs.com](https://www.npmjs.com/package/gdc-cas) are published exclusively through the repository's automated GitHub Actions release pipeline and Google OSS Exit Gate after passing GDC Air-gapped Staging integration verification. Do not run `npm publish` manually from a local workstation.

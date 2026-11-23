@@ -16,20 +16,19 @@ name: CI
 
 on:
   pull_request:
-    branches:
-      - main
   push:
     branches:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   check:
     name: Check (Syntax & Build)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,6 +57,11 @@ jobs:
             }
           "
 
+      - name: Verify LICENSE and NOTICE sync in gdc-cas package
+        run: |
+          diff -u LICENSE cas/gdc-cas/LICENSE
+          diff -u NOTICE cas/gdc-cas/NOTICE
+
       - name: Check JavaScript syntax
         run: |
           node --check cas/gdc-cas/index.js
@@ -66,6 +70,10 @@ jobs:
           node --check cas/gdc-cas/proto/cas-json.js
           node --check cas/run-example.js
           node --check .github/scripts/evaluate-bot-pr.mjs
+
+      - name: Check TypeScript declarations (cas-client.d.ts)
+        working-directory: cas/gdc-cas
+        run: npm run check:types
 
       - name: Verify gdc-cas ESM exports
         run: |
@@ -82,9 +90,15 @@ jobs:
           npm run build:proto
           git diff --exit-code proto/cas-json.js
 
+      - name: Audit runtime dependencies (gdc-cas)
+        working-directory: cas/gdc-cas
+        run: npm audit --omit=dev --audit-level=high
+
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -100,9 +114,33 @@ jobs:
         working-directory: cas/gdc-cas
         run: npm ci --no-audit --no-fund
 
-      - name: Run gdc-cas unit tests
+      - name: Run gdc-cas unit and package smoke tests
         working-directory: cas/gdc-cas
         run: npm test
 
       - name: Run bot PR evaluator unit tests
         run: node --test .github/scripts/evaluate-bot-pr.test.mjs
+
+  test-node22:
+    name: Unit Tests (Node 22 LTS)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      - name: Install dependencies (gdc-cas)
+        working-directory: cas/gdc-cas
+        run: npm ci --no-audit --no-fund
+
+      - name: Run gdc-cas unit and package smoke tests on Node 22
+        working-directory: cas/gdc-cas
+        run: npm test
