@@ -1,0 +1,516 @@
+<!--
+  Copyright 2026 Google LLC
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GDC Air-gapped Node.js SDK — Release &amp; SemVer Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --success: #22c55e;
+      --failure: #ef4444;
+      --running: #3b82f6;
+      --release: #a855f7;
+      --prerelease: #f59e0b;
+      --canary: #0ea5e9;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+    }
+    .container { max-width: 1320px; margin: 0 auto; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 16px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    h1 { margin: 0; font-size: 1.45rem; }
+    .subtitle { color: var(--muted); font-size: 0.9rem; margin-top: 4px; }
+    .header-links { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.9rem; }
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(205px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+    }
+    .kpi-label {
+      color: var(--muted);
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .kpi-value {
+      font-size: 1.35rem;
+      font-weight: 700;
+      margin-top: 8px;
+      word-break: break-word;
+    }
+    .kpi-sub {
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin-top: 6px;
+    }
+    .pipeline-stages {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .stage-pill {
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      font-size: 0.84rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .badge.success, .badge.completed { background: rgba(34, 197, 94, 0.18); color: var(--success); }
+    .badge.failure { background: rgba(239, 68, 68, 0.18); color: var(--failure); }
+    .badge.running, .badge.in_progress, .badge.queued, .badge.waiting { background: rgba(59, 130, 246, 0.18); color: var(--running); }
+    .badge.pending, .badge.skipped, .badge.unknown, .badge.cancelled, .badge.idle { background: rgba(100, 116, 139, 0.2); color: var(--muted); }
+    .badge.release { background: rgba(168, 85, 247, 0.22); color: #c084fc; }
+    .badge.prerelease { background: rgba(245, 158, 11, 0.22); color: #fbbf24; }
+    .badge.canary { background: rgba(14, 165, 233, 0.2); color: #38bdf8; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+    .badge.running, .badge.in_progress { animation: pulse 1.8s ease-in-out infinite; }
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+    .filters { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    select {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 0.84rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 0.85rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    th { color: var(--muted); font-weight: 600; }
+    a { color: #38bdf8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+      background: rgba(15, 23, 42, 0.6);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.78rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>GDC Air-gapped Node.js SDK — Release &amp; SemVer Dashboard</h1>
+        <div class="subtitle">
+          Weekday GDC Staging Canary Qualification &amp; Certified SemVer npm Releases (<code>google-distributed-cloud-node</code>)
+        </div>
+      </div>
+      <div class="header-links">
+        <a href="https://www.npmjs.com/package/gdc-cas" target="_blank" rel="noopener">npmjs: gdc-cas &rarr;</a>
+        <a href="https://github.com/GoogleCloudPlatform/google-distributed-cloud-node/releases" target="_blank" rel="noopener">GitHub Releases &rarr;</a>
+        <a href="https://github.com/GoogleCloudPlatform/google-distributed-cloud-node/actions/workflows/release-pipeline.yaml" target="_blank" rel="noopener">Release Workflow &rarr;</a>
+      </div>
+    </header>
+
+    <div class="kpi-grid">
+      <div class="card">
+        <div class="kpi-label">Live npm Latest (gdc-cas)</div>
+        <div class="kpi-value" id="kpi-npm-latest">Checking...</div>
+        <div class="kpi-sub" id="kpi-npm-sub">registry.npmjs.org/gdc-cas</div>
+      </div>
+      <div class="card">
+        <div class="kpi-label">30-Day npm Downloads</div>
+        <div class="kpi-value" id="kpi-npm-downloads">-</div>
+        <div class="kpi-sub" id="kpi-npm-alpha">Pre-release (alpha): -</div>
+      </div>
+      <div class="card">
+        <div class="kpi-label">Latest Certified Release</div>
+        <div class="kpi-value" id="kpi-latest-release">-</div>
+        <div class="kpi-sub" id="kpi-latest-canary">Latest Canary: -</div>
+      </div>
+      <div class="card">
+        <div class="kpi-label">Pipeline Pass Rate</div>
+        <div class="kpi-value" id="kpi-pass-rate">-</div>
+        <div class="kpi-sub" id="kpi-total-runs">0 recorded runs</div>
+      </div>
+      <div class="card">
+        <div class="kpi-label">Cadence &amp; Governance</div>
+        <div class="kpi-value" style="font-size: 0.95rem; line-height: 1.45;">
+          Canary: Mon–Fri 02:00 PST<br />
+          Publish: OSS Exit Gate (WIF)
+        </div>
+        <div class="kpi-sub">Independent SemVer (<code>0.1.0+</code>)</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 24px;">
+      <div class="kpi-label" id="latest-stages-label">Latest Pipeline Execution Stage Progress</div>
+      <div class="pipeline-stages" id="latest-stages"></div>
+    </div>
+
+    <div class="card">
+      <div class="toolbar">
+        <div class="kpi-label">Release, Pre-Release &amp; Canary Execution History</div>
+        <div class="filters">
+          <div>
+            <label for="pkg-filter" style="color: var(--muted); font-size: 0.82rem; margin-right: 4px;">Package:</label>
+            <select id="pkg-filter">
+              <option value="all">All Packages</option>
+              <option value="gdc-cas">gdc-cas</option>
+            </select>
+          </div>
+          <div>
+            <label for="mode-filter" style="color: var(--muted); font-size: 0.82rem; margin-right: 4px;">Mode:</label>
+            <select id="mode-filter">
+              <option value="all">All Modes</option>
+              <option value="release">Official Release</option>
+              <option value="prerelease">Pre-release (alpha)</option>
+              <option value="canary">Staging Canary</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Run</th>
+            <th>Timestamp</th>
+            <th>Package</th>
+            <th>Mode</th>
+            <th>Status</th>
+            <th>SemVer &amp; Tag</th>
+            <th>Commit</th>
+            <th>Stages (Auth / Staging / Publish)</th>
+            <th>Duration</th>
+          </tr>
+        </thead>
+        <tbody id="runs-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const REPO_SLUG = 'GoogleCloudPlatform/google-distributed-cloud-node';
+    const WORKFLOW_RUNS_API = `https://api.github.com/repos/${REPO_SLUG}/actions/workflows/release-pipeline.yaml/runs?per_page=10`;
+    const NPM_REGISTRY_URL = 'https://registry.npmjs.org/gdc-cas';
+    const NPM_DOWNLOADS_URL = 'https://api.npmjs.org/downloads/point/last-month/gdc-cas';
+
+    const STAGE_ORDER = [
+      ['authorize', '1. Authorize & SemVer'],
+      ['staging', '2. GDC Staging (KRM + gRPC)'],
+      ['publish', '3. OSS Exit Gate & Release']
+    ];
+
+    let recordedRuns = [];
+    let liveRuns = [];
+
+    function esc(val) {
+      return String(val ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function formatDurationSeconds(secs) {
+      if (!Number.isFinite(secs) || secs < 0) return 'N/A';
+      const s = Math.floor(secs % 60);
+      const m = Math.floor((secs % 3600) / 60);
+      const h = Math.floor(secs / 3600);
+      if (h > 0) return `${h}h ${m}m ${s}s`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+
+    function formatTimestamp(iso) {
+      if (!iso) return '-';
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return iso;
+      return new Intl.DateTimeFormat(undefined, {
+        year: 'numeric', month: 'short', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', timeZoneName: 'short'
+      }).format(d);
+    }
+
+    async function loadNpmRegistryStats() {
+      const latestEl = document.getElementById('kpi-npm-latest');
+      const subEl = document.getElementById('kpi-npm-sub');
+      const alphaEl = document.getElementById('kpi-npm-alpha');
+      const dlEl = document.getElementById('kpi-npm-downloads');
+
+      try {
+        const res = await fetch(NPM_REGISTRY_URL, { cache: 'no-store' });
+        if (res.status === 404) {
+          latestEl.textContent = 'Unpublished';
+          subEl.textContent = 'Pending initial 0.1.0 release';
+          alphaEl.textContent = 'Pre-release (alpha): none';
+          dlEl.textContent = '0';
+          return;
+        }
+        if (res.ok) {
+          const data = await res.json();
+          const tags = data['dist-tags'] || {};
+          const latest = tags.latest || '-';
+          const alpha = tags.alpha || tags.next || 'none';
+          const pubTime = (data.time && latest && data.time[latest]) ? formatTimestamp(data.time[latest]) : '';
+          latestEl.textContent = latest !== '-' ? `v${latest}` : '-';
+          subEl.textContent = pubTime ? `Published ${pubTime}` : 'registry.npmjs.org/gdc-cas';
+          alphaEl.textContent = `Pre-release (alpha): ${alpha}`;
+        }
+      } catch {
+        latestEl.textContent = 'Unavailable';
+      }
+
+      try {
+        const dlRes = await fetch(NPM_DOWNLOADS_URL, { cache: 'no-store' });
+        if (dlRes.ok) {
+          const dlData = await dlRes.json();
+          dlEl.textContent = Number(dlData.downloads || 0).toLocaleString();
+        }
+      } catch {
+        // Ignore transient network errors.
+      }
+    }
+
+    async function loadRecordedRuns() {
+      try {
+        const res = await fetch('./data/runs.json', { cache: 'no-store' });
+        if (res.ok) {
+          const parsed = await res.json();
+          recordedRuns = Array.isArray(parsed) ? parsed : [];
+        }
+      } catch {
+        recordedRuns = [];
+      }
+    }
+
+    function mapJobState(job) {
+      if (!job) return 'pending';
+      if (job.status === 'in_progress') return 'running';
+      if (job.status === 'queued' || job.status === 'waiting') return job.status;
+      if (job.status === 'completed') return job.conclusion || 'completed';
+      return 'pending';
+    }
+
+    async function loadLiveWorkflowRuns() {
+      try {
+        const res = await fetch(WORKFLOW_RUNS_API, { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const runs = (data.workflow_runs || []).slice(0, 5);
+        const active = runs.filter((r) => r.status !== 'completed');
+        liveRuns = await Promise.all(active.map(async (wRun) => {
+          let stages = { authorize: 'pending', staging: 'pending', publish: 'pending' };
+          try {
+            const jRes = await fetch(`https://api.github.com/repos/${REPO_SLUG}/actions/runs/${wRun.id}/jobs`, { cache: 'no-store' });
+            if (jRes.ok) {
+              const jData = await jRes.json();
+              const jobs = jData.jobs || [];
+              const authJob = jobs.find((j) => (j.name || '').includes('Authorize'));
+              const stgJob = jobs.find((j) => (j.name || '').includes('Staging'));
+              const pubJob = jobs.find((j) => (j.name || '').includes('Publish'));
+              stages = {
+                authorize: mapJobState(authJob),
+                staging: mapJobState(stgJob),
+                publish: mapJobState(pubJob),
+              };
+            }
+          } catch {
+            // Best-effort job lookup.
+          }
+          return {
+            runId: String(wRun.id),
+            runNumber: String(wRun.run_number),
+            timestamp: wRun.created_at,
+            startedAtMs: Date.parse(wRun.run_started_at || wRun.created_at),
+            package: 'gdc-cas',
+            releaseMode: wRun.event === 'schedule' ? 'canary' : 'running',
+            trigger: wRun.event,
+            status: wRun.status,
+            version: '-',
+            tag: '-',
+            commitSha: (wRun.head_sha || '').slice(0, 7),
+            runUrl: wRun.html_url,
+            stages,
+          };
+        }));
+      } catch {
+        liveRuns = [];
+      }
+    }
+
+    function mergedRuns() {
+      const recordedIds = new Set(recordedRuns.map((r) => String(r.runId)));
+      const unrecordedLive = liveRuns.filter((r) => !recordedIds.has(String(r.runId)));
+      return [...unrecordedLive, ...recordedRuns];
+    }
+
+    function populatePackageFilter(all) {
+      const select = document.getElementById('pkg-filter');
+      const current = select.value;
+      const pkgs = new Set(['gdc-cas']);
+      for (const r of all) {
+        if (r.package) pkgs.add(r.package);
+      }
+      select.innerHTML = '<option value="all">All Packages</option>' +
+        [...pkgs].map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
+      if ([...pkgs, 'all'].includes(current)) select.value = current;
+    }
+
+    function render() {
+      const all = mergedRuns();
+      populatePackageFilter(all);
+
+      const completed = recordedRuns.filter((r) => r.status === 'success' || r.status === 'failure');
+      const passed = completed.filter((r) => r.status === 'success');
+      document.getElementById('kpi-total-runs').textContent = `${recordedRuns.length} recorded run${recordedRuns.length === 1 ? '' : 's'}`;
+      document.getElementById('kpi-pass-rate').textContent = completed.length > 0
+        ? `${Math.round((passed.length / completed.length) * 100)}%`
+        : '-';
+
+      const latestRel = recordedRuns.find((r) => r.releaseMode === 'release' && r.status === 'success');
+      const latestCanary = recordedRuns.find((r) => r.releaseMode === 'canary' && r.status === 'success');
+      document.getElementById('kpi-latest-release').textContent = latestRel ? `${latestRel.package}@${latestRel.version}` : 'None yet';
+      document.getElementById('kpi-latest-canary').textContent = latestCanary
+        ? `Latest Canary: ${latestCanary.commitSha} (pass)`
+        : 'Latest Canary: pending first run';
+
+      const stagesEl = document.getElementById('latest-stages');
+      const stagesLabelEl = document.getElementById('latest-stages-label');
+      const target = all[0];
+      if (target) {
+        const dur = target.startedAtMs
+          ? formatDurationSeconds((Date.now() - target.startedAtMs) / 1000)
+          : (target.duration || 'N/A');
+        stagesLabelEl.innerHTML = `Latest Pipeline Execution Stage Progress &mdash; <a href="${esc(target.runUrl)}" target="_blank" rel="noopener">Run #${esc(target.runNumber)}</a> (<span class="badge ${esc(target.status)}">${esc(target.status)}</span> &middot; ${esc(dur)})`;
+        stagesEl.innerHTML = STAGE_ORDER.map(([key, label]) => {
+          const st = (target.stages && target.stages[key]) || 'unknown';
+          return `<div class="stage-pill"><span>${esc(label)}</span><span class="badge ${esc(st)}">${esc(st)}</span></div>`;
+        }).join('');
+      } else {
+        stagesLabelEl.textContent = 'Latest Pipeline Execution Stage Progress';
+        stagesEl.innerHTML = STAGE_ORDER.map(([, label]) =>
+          `<div class="stage-pill"><span>${esc(label)}</span><span class="badge idle">idle</span></div>`
+        ).join('');
+      }
+
+      const pkgFilter = document.getElementById('pkg-filter').value;
+      const modeFilter = document.getElementById('mode-filter').value;
+      const filtered = all.filter((r) =>
+        (pkgFilter === 'all' || r.package === pkgFilter) &&
+        (modeFilter === 'all' || r.releaseMode === modeFilter)
+      );
+
+      const tbody = document.getElementById('runs-tbody');
+      if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color: var(--muted); padding: 24px;">No pipeline runs recorded yet for this filter.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = filtered.map((r) => {
+        const commitLink = r.commitSha && r.commitSha !== '-'
+          ? `<a href="https://github.com/${REPO_SLUG}/commit/${esc(r.commitSha)}" target="_blank" rel="noopener"><code>${esc(r.commitSha.slice(0, 7))}</code></a>`
+          : '-';
+        const st = r.stages || {};
+        const stageBadges = ['authorize', 'staging', 'publish'].map((k) =>
+          `<span class="badge ${esc(st[k] || 'skipped')}">${esc(st[k] || 'skipped')}</span>`
+        ).join(' ');
+        const dur = r.startedAtMs
+          ? formatDurationSeconds((Date.now() - r.startedAtMs) / 1000)
+          : (r.duration || 'N/A');
+        return `<tr>
+          <td><a href="${esc(r.runUrl)}" target="_blank" rel="noopener">#${esc(r.runNumber)}</a></td>
+          <td>${esc(formatTimestamp(r.timestamp))}</td>
+          <td><code>${esc(r.package || 'gdc-cas')}</code></td>
+          <td><span class="badge ${esc(r.releaseMode)}">${esc(r.releaseMode)}</span></td>
+          <td><span class="badge ${esc(r.status)}">${esc(r.status)}</span></td>
+          <td><code>${esc(r.version || '-')}</code>${r.tag && r.tag !== '-' ? ` <span style="color:var(--muted)">(${esc(r.tag)})</span>` : ''}</td>
+          <td>${commitLink}</td>
+          <td>${stageBadges}</td>
+          <td>${esc(dur)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    document.getElementById('pkg-filter').addEventListener('change', render);
+    document.getElementById('mode-filter').addEventListener('change', render);
+
+    async function refreshAll() {
+      await Promise.all([loadRecordedRuns(), loadLiveWorkflowRuns(), loadNpmRegistryStats()]);
+      render();
+    }
+
+    refreshAll();
+    setInterval(async () => {
+      await loadLiveWorkflowRuns();
+      render();
+    }, 20000);
+    setInterval(render, 1000);
+  </script>
+</body>
+</html>

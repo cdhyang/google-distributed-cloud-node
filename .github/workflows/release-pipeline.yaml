@@ -1,0 +1,404 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: SDK Release & Qualification Pipeline
+
+on:
+  # Weekday GDC Air-gapped Staging canary health check (Mon-Fri 02:00 PST / 10:00 UTC).
+  # Canary runs qualify main on GDC Staging and update the dashboard without publishing to npmjs.
+  schedule:
+    - cron: '0 10 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'SDK package to qualify or publish'
+        required: false
+        default: 'gdc-cas'
+        type: choice
+        options:
+          - gdc-cas
+      release_mode:
+        description: 'Execution mode (canary = GDC Staging qualification only; prerelease = npm --tag alpha; release = npm --tag latest + GitHub Release)'
+        required: false
+        default: 'canary'
+        type: choice
+        options:
+          - canary
+          - prerelease
+          - release
+      next_version:
+        description: 'Automated post-release version bump PR operation (used when release_mode == release)'
+        required: false
+        default: 'bump-patch'
+        type: choice
+        options:
+          - bump-patch
+          - bump-minor
+          - bump-major
+          - bump-prerelease
+          - noop
+      oss_exit_gate_project:
+        description: 'Google OSS Exit Gate project slug'
+        required: false
+        default: 'gdc-node'
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: sdk-release-pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize Maintainer & Resolve SemVer
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_mode: ${{ steps.plan.outputs.release_mode }}
+      package_name: ${{ steps.plan.outputs.package_name }}
+      package_dir: ${{ steps.plan.outputs.package_dir }}
+      version: ${{ steps.plan.outputs.version }}
+      git_tag: ${{ steps.plan.outputs.git_tag }}
+      npm_dist_tag: ${{ steps.plan.outputs.npm_dist_tag }}
+      needs_publish: ${{ steps.plan.outputs.needs_publish }}
+      start_epoch: ${{ steps.plan.outputs.start_epoch }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '20'
+
+      - name: Verify maintainer authorization & compute SemVer plan
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+          INPUT_PACKAGE: ${{ inputs.package }}
+          INPUT_MODE: ${{ inputs.release_mode }}
+        run: |
+          set -euo pipefail
+          echo "start_epoch=$(date -u +%s)" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ "${REF_NAME}" != "main" ]]; then
+              echo "::error::The release pipeline must be triggered from 'main' (got '${REF_NAME}')."
+              exit 1
+            fi
+            git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+            owners_raw="$(git show origin/main:CODEOWNERS 2>/dev/null || git show origin/main:.github/CODEOWNERS 2>/dev/null || cat CODEOWNERS)"
+            actor_lc="$(printf '%s' "${ACTOR}" | tr '[:upper:]' '[:lower:]')"
+            if ! printf '%s\n' "${owners_raw}" | grep -v '^[[:space:]]*#' | grep -oE '@[A-Za-z0-9_-]+' | tr -d '@' | tr '[:upper:]' '[:lower:]' | grep -Fxq "${actor_lc}"; then
+              echo "::error::Unauthorized actor @${ACTOR}. Only maintainers listed in CODEOWNERS on main may trigger the release pipeline."
+              exit 1
+            fi
+          fi
+
+          mode="canary"
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && -n "${INPUT_MODE}" ]]; then
+            mode="${INPUT_MODE}"
+          fi
+          pkg="${INPUT_PACKAGE:-gdc-cas}"
+          echo "release_mode=${mode}" >> "${GITHUB_OUTPUT}"
+
+          PACKAGE_NAME="${pkg}" RELEASE_MODE="${mode}" node ./scripts/release/semver-helper.mjs resolve
+
+  certify-staging:
+    name: Certify Package on GDC Staging
+    needs: authorize
+    runs-on: ubuntu-latest
+    environment: gdc-staging
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '20'
+
+      - name: Pack candidate tarball & run unit checks
+        env:
+          PKG_DIR: ${{ needs.authorize.outputs.package_dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/release-artifacts
+          (
+            cd "${PKG_DIR}"
+            npm ci --no-audit --no-fund
+            npm test
+            npm pack --pack-destination /tmp/release-artifacts
+          )
+
+      - name: Execute GDC Air-gapped Staging integration suite
+        env:
+          GDC_CAS_STAGING_SA_KEY: ${{ secrets.GDC_CAS_STAGING_SA_KEY }}
+          GDC_ORG: ${{ vars.GDC_ORG }}
+          GDC_ZONE: ${{ vars.GDC_ZONE }}
+          GDC_LAB_URL: ${{ vars.GDC_LAB_URL }}
+          GDC_CAS_PROJECT: ${{ vars.GDC_CAS_PROJECT }}
+          GDC_CAS_CA_NAME: ${{ vars.GDC_CAS_CA_NAME }}
+        run: |
+          set -euo pipefail
+          if [[ -x "./scripts/ci-integration-test.sh" ]]; then
+            bash ./scripts/ci-integration-test.sh
+          else
+            echo "::error::scripts/ci-integration-test.sh is required to certify releases on GDC Staging."
+            exit 1
+          fi
+
+      - name: Upload certified npm tarball artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: certified-npm-tarball
+          path: /tmp/release-artifacts/*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-npm:
+    name: Publish via Google OSS Exit Gate & Tag Release
+    needs: [authorize, certify-staging]
+    if: (needs.authorize.outputs.release_mode == 'prerelease' || needs.authorize.outputs.release_mode == 'release') && needs.authorize.outputs.needs_publish == 'true'
+    runs-on: ubuntu-latest
+    environment: npm-release
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '20'
+
+      - name: Download certified npm tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: certified-npm-tarball
+          path: /tmp/certified-tarball
+
+      - name: Authenticate with Google OSS Exit Gate (Workload Identity Federation)
+        uses: google-github-actions/auth@7b53cdc2a387814ed14eec026287aac689ae8c9b # v2.1.9
+        with:
+          workload_identity_provider: 'projects/305452601764/locations/global/workloadIdentityPools/builders/providers/github'
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
+
+      - name: Publish certified tarball to Artifact Registry & trigger OSS Exit Gate
+        env:
+          EXIT_GATE_PROJECT: ${{ inputs.oss_exit_gate_project || 'gdc-node' }}
+          NPM_DIST_TAG: ${{ needs.authorize.outputs.npm_dist_tag }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${EXIT_GATE_PROJECT}" =~ ^[a-z0-9-]+$ ]]; then
+            echo "::error::Invalid oss_exit_gate_project '${EXIT_GATE_PROJECT}'."
+            exit 1
+          fi
+
+          ar_url="https://us-npm.pkg.dev/oss-exit-gate-prod/${EXIT_GATE_PROJECT}--npm/"
+          ar_host="//us-npm.pkg.dev/oss-exit-gate-prod/${EXIT_GATE_PROJECT}--npm/"
+          work_npmrc="$(mktemp /tmp/exit-gate-npmrc.XXXXXX)"
+          {
+            echo "registry=${ar_url}"
+            echo "${ar_host}:always-auth=true"
+          } > "${work_npmrc}"
+
+          npx --yes google-artifactregistry-auth --repo-config="${work_npmrc}" --credential-config="${work_npmrc}"
+          tarball_file="$(ls /tmp/certified-tarball/*.tgz | head -n 1)"
+          npm publish "${tarball_file}" --userconfig "${work_npmrc}" --tag "${NPM_DIST_TAG}"
+          rm -f "${work_npmrc}"
+
+          manifest_file="/tmp/publish_all.json"
+          printf '{"publish_all": true}\n' > "${manifest_file}"
+          gcloud storage cp "${manifest_file}" "gs://oss-exit-gate-prod-projects-bucket/${EXIT_GATE_PROJECT}/npm/manifests/manifest.json"
+          echo "Uploaded manifest to GCS; Google OSS Exit Gate publication to npmjs.com triggered."
+
+      - name: Create GitHub Release & open post-release SemVer bump PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_SLUG: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          PKG_NAME: ${{ needs.authorize.outputs.package_name }}
+          PKG_DIR: ${{ needs.authorize.outputs.package_dir }}
+          PKG_VERSION: ${{ needs.authorize.outputs.version }}
+          GIT_TAG: ${{ needs.authorize.outputs.git_tag }}
+          RELEASE_MODE: ${{ needs.authorize.outputs.release_mode }}
+          NEXT_VERSION_OP: ${{ inputs.next_version || 'bump-patch' }}
+        run: |
+          set -euo pipefail
+          tarball_file="$(ls /tmp/certified-tarball/*.tgz | head -n 1)"
+          sha512_hex="$(sha512sum "${tarball_file}" | awk '{print $1}')"
+
+          prerelease_flags=()
+          if [[ "${RELEASE_MODE}" == "prerelease" ]]; then
+            prerelease_flags+=(--prerelease)
+          fi
+
+          if ! gh release view "${GIT_TAG}" --repo "${REPO_SLUG}" >/dev/null 2>&1; then
+            gh release create "${GIT_TAG}" "${tarball_file}" \
+              --repo "${REPO_SLUG}" \
+              --target "${COMMIT_SHA}" \
+              --title "${PKG_NAME} v${PKG_VERSION}" \
+              --generate-notes \
+              --notes-start-tag "$(git describe --tags --abbrev=0 --match "${PKG_NAME}-v*" 2>/dev/null || echo '')" \
+              "${prerelease_flags[@]}"
+          fi
+          echo "Published GitHub Release ${GIT_TAG} (SHA-512: ${sha512_hex})."
+
+          if [[ "${RELEASE_MODE}" == "release" && "${NEXT_VERSION_OP}" != "noop" ]]; then
+            next_ver="$(CURRENT_VERSION="${PKG_VERSION}" NEXT_VERSION_OP="${NEXT_VERSION_OP}" node ./scripts/release/semver-helper.mjs bump)"
+            bump_branch="chore/bump-${PKG_NAME}-v${next_ver}"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git checkout -B "${bump_branch}" "${COMMIT_SHA}"
+            (
+              cd "${PKG_DIR}"
+              npm version "${next_ver}" --no-git-tag-version
+            )
+            git add "${PKG_DIR}/package.json" "${PKG_DIR}/package-lock.json"
+            git commit -m "chore(${PKG_NAME}): bump version to ${next_ver}"
+            git push -f "https://x-access-token:${GH_TOKEN}@github.com/${REPO_SLUG}.git" "${bump_branch}"
+            gh pr create \
+              --repo "${REPO_SLUG}" \
+              --base main \
+              --head "${bump_branch}" \
+              --title "chore(${PKG_NAME}): bump version to ${next_ver}" \
+              --body "Automated post-release SemVer bump following \`${GIT_TAG}\`." || true
+          fi
+
+  update-dashboard:
+    name: Update Release Dashboard (GitHub Pages)
+    needs: [authorize, certify-staging, publish-npm]
+    if: always() && (needs.authorize.result == 'success' || needs.authorize.result == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '20'
+
+      - name: Append run telemetry to gh-pages branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_SLUG: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          TRIGGER_EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          COMMIT_SHA: ${{ github.sha }}
+          SERVER_URL: ${{ github.server_url }}
+          START_EPOCH: ${{ needs.authorize.outputs.start_epoch }}
+          PACKAGE_NAME: ${{ needs.authorize.outputs.package_name || 'gdc-cas' }}
+          RELEASE_MODE: ${{ needs.authorize.outputs.release_mode || 'canary' }}
+          PACKAGE_VERSION: ${{ needs.authorize.outputs.version || '-' }}
+          GIT_TAG: ${{ needs.authorize.outputs.git_tag || '-' }}
+          STAGE_AUTHORIZE: ${{ needs.authorize.result }}
+          STAGE_STAGING: ${{ needs.certify-staging.result }}
+          STAGE_PUBLISH: ${{ needs.publish-npm.result }}
+        run: |
+          set -euo pipefail
+          now_epoch="$(date -u +%s)"
+          duration_str="N/A"
+          if [[ "${START_EPOCH:-}" =~ ^[0-9]+$ ]]; then
+            elapsed=$(( now_epoch - START_EPOCH ))
+            duration_str="$((elapsed / 60))m $((elapsed % 60))s"
+          fi
+
+          overall="success"
+          if [[ "${STAGE_AUTHORIZE}" == "failure" || "${STAGE_STAGING}" == "failure" || "${STAGE_PUBLISH}" == "failure" ]]; then
+            overall="failure"
+          elif [[ "${STAGE_AUTHORIZE}" == "cancelled" || "${STAGE_STAGING}" == "cancelled" || "${STAGE_PUBLISH}" == "cancelled" ]]; then
+            overall="cancelled"
+          fi
+
+          pages_dir="$(mktemp -d /tmp/gh-pages.XXXXXX)"
+          remote_url="https://x-access-token:${GH_TOKEN}@github.com/${REPO_SLUG}.git"
+          if git ls-remote --exit-code --heads "${remote_url}" gh-pages >/dev/null 2>&1; then
+            git clone --branch gh-pages "${remote_url}" "${pages_dir}"
+          else
+            git init "${pages_dir}"
+            git -C "${pages_dir}" checkout --orphan gh-pages
+          fi
+
+          cp ./dashboard/index.html "${pages_dir}/index.html"
+          touch "${pages_dir}/.nojekyll"
+          mkdir -p "${pages_dir}/data"
+
+          OVERALL_STATUS="${overall}" \
+          DURATION="${duration_str}" \
+          RUN_URL="${SERVER_URL}/${REPO_SLUG}/actions/runs/${RUN_ID}" \
+          node ./scripts/release/semver-helper.mjs append-run "${pages_dir}/data/runs.json"
+
+          cp "${pages_dir}/data/runs.json" ./dashboard/data/runs.json
+
+          git -C "${pages_dir}" config user.name "github-actions[bot]"
+          git -C "${pages_dir}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "${pages_dir}" add index.html .nojekyll data/runs.json
+          if ! git -C "${pages_dir}" diff --cached --quiet; then
+            git -C "${pages_dir}" commit -m "chore(dashboard): record ${RELEASE_MODE} run #${RUN_NUMBER}"
+            for attempt in 1 2 3; do
+              if git -C "${pages_dir}" push "${remote_url}" gh-pages; then
+                break
+              fi
+              git -C "${pages_dir}" pull --rebase "${remote_url}" gh-pages
+            done
+          fi
+          rm -rf "${pages_dir}"
+
+      - name: Configure Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          path: ./dashboard
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
